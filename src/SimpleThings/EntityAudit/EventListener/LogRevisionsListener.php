@@ -123,6 +123,7 @@ class LogRevisionsListener implements EventSubscriber
                 continue;
             }
 
+            $queryData = array();
             foreach ($updateData[$meta->table['name']] as $column => $value) {
                 $field = $meta->getFieldName($column);
                 $fieldName = $meta->getFieldForColumn($column);
@@ -138,16 +139,8 @@ class LogRevisionsListener implements EventSubscriber
                     }
                 }
 
-                $sql = 'UPDATE ' . $this->config->getTableName($meta) . ' ' .
-                    'SET ' . $field . ' = ' . $placeholder . ' ' .
-                    'WHERE ' . $this->config->getRevisionFieldName() . ' = ? ';
-
-                $params = array($value, $this->getRevisionId());
-
-                $types = array();
-
                 if (in_array($column, $meta->columnNames)) {
-                    $types[] = $meta->getTypeOfField($fieldName);
+                    $type = $meta->getTypeOfField($fieldName);
                 } else {
                     //try to find column in association mappings
                     $type = null;
@@ -168,36 +161,42 @@ class LogRevisionsListener implements EventSubscriber
                             sprintf('Could not resolve database type for column "%s" during extra updates', $column)
                         );
                     }
-                    
-                    $types[] = $type;
                 }
 
-                $types[] = $this->config->getRevisionIdFieldType();
-
-                foreach ($meta->identifier AS $idField) {
-                    if (isset($meta->fieldMappings[$idField])) {
-                        $columnName = $meta->fieldMappings[$idField]['columnName'];
-                        $types[] = $meta->fieldMappings[$idField]['type'];
-                    } elseif (isset($meta->associationMappings[$idField])) {
-                        $columnName = $meta->associationMappings[$idField]['joinColumns'][0];
-                        if (is_array($columnName)) {
-                            if (isset($columnName['name'])) {
-                                $columnName = $columnName['name'];
-                            } else {
-                                // Not much we can do to recover this - we need a column name...
-                                throw new MappingException('Column name not set within meta');
-                            }
-                        }
-                        $types[] = $meta->associationMappings[$idField]['type'];
-                    }
-
-                    $params[] = $meta->reflFields[$idField]->getValue($entity);
-
-                    $sql .= 'AND ' . $columnName . ' = ?';
-                }
-
-                $this->em->getConnection()->executeQuery($sql, $params, $types);
+                $queryData['sql'][] = $field . ' = ' . $placeholder;
+                $queryData['params'][] = $value;
+                $queryData['types'][] = $type;
             }
+
+            $sql = 'UPDATE ' . $this->config->getTableName($meta) . ' ' .
+                'SET ' . implode(', ', $queryData['sql']) . ' ' .
+                'WHERE ' . $this->config->getRevisionFieldName() . ' = ? ';
+
+            $queryData['params'][] = $this->getRevisionId();
+            $queryData['types'][] = $this->config->getRevisionIdFieldType();
+
+            foreach ($meta->identifier AS $idField) {
+                if (isset($meta->fieldMappings[$idField])) {
+                    $columnName = $meta->fieldMappings[$idField]['columnName'];
+                    $queryData['types'][] = $meta->fieldMappings[$idField]['type'];
+                } elseif (isset($meta->associationMappings[$idField])) {
+                    $columnName = $meta->associationMappings[$idField]['joinColumns'][0];
+                    if (is_array($columnName)) {
+                        if (isset($columnName['name'])) {
+                            $columnName = $columnName['name'];
+                        } else {
+                            // Not much we can do to recover this - we need a column name...
+                            throw new MappingException('Column name not set within meta');
+                        }
+                    }
+                    $queryData['types'][] = $meta->associationMappings[$idField]['type'];
+                }
+
+                $queryData['params'][] = $meta->reflFields[$idField]->getValue($entity);
+                $sql .= 'AND ' . $columnName . ' = ? ';
+            }
+
+            $this->em->getConnection()->executeQuery($sql, $queryData['params'], $queryData['types']);
         }
     }
 
